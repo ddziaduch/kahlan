@@ -1,24 +1,19 @@
 <?php
-namespace Kahlan;
+namespace Kahlan\Block;
 
 use Closure;
 use Throwable;
 use Exception;
+use Kahlan\Expectation;
+use Kahlan\Scope\Specification as Scope;
 
-class Specification extends Scope
+class Specification extends \Kahlan\Block
 {
     /**
      * List of expectations.
      * @var Expectation[]
      */
     protected $_expectations = [];
-
-    /**
-     * Store the return value of the spec closure.
-     *
-     * @var mixed
-     */
-    protected $_return = null;
 
     /**
      * Constructor.
@@ -31,20 +26,15 @@ class Specification extends Scope
     public function __construct($config = [])
     {
         $defaults = [
-            'closure' => null,
             'message' => 'passes'
         ];
         $config += $defaults;
         $config['message'] = 'it ' . $config['message'];
+
         parent::__construct($config);
 
-        $config['closure'] = $config['closure'] ?: function () {
-        };
-        $this->_closure = $this->_bind($config['closure'], 'it');
-
-        if ($this->_type === 'focus') {
-            $this->_emitFocus();
-        }
+        $this->_scope = new Scope(['block' => $this]);
+        $this->_closure = $this->_bindScope($this->_closure);
     }
 
     /**
@@ -78,100 +68,29 @@ class Specification extends Scope
     }
 
     /**
-     * Processes a child specs.
-     *
-     * @see Kahlan\Suite::process()
-     */
-    protected function _process()
-    {
-        if ($this->_root->focused() && !$this->focused()) {
-            return;
-        }
-        if ($this->excluded()) {
-            $this->log()->type('excluded');
-            $this->summary()->log($this->log());
-            $this->report('specEnd', $this->log());
-            return;
-        }
-
-        $result = null;
-
-        if (Suite::$PHP >= 7) {
-            try {
-                $this->_specStart();
-                try {
-                    $result = $this->_execute();
-                } catch (Throwable $exception) {
-                    $this->_exception($exception);
-                }
-                $this->_specEnd();
-            } catch (Throwable $exception) {
-                $this->_exception($exception, true);
-                $this->_specEnd(!$exception instanceof SkipException);
-            }
-        } else {
-            try {
-                $this->_specStart();
-                try {
-                    $result = $this->_execute();
-                } catch (Exception $exception) {
-                    $this->_exception($exception);
-                }
-                $this->_specEnd();
-            } catch (Exception $exception) {
-                $this->_exception($exception, true);
-                $this->_specEnd(!$exception instanceof SkipException);
-            }
-        }
-
-        return $this->_return = $result;
-    }
-
-    /**
      * Processes the spec.
      */
     protected function _execute()
     {
-        static::$_instances[] = $this;
-
         $result = null;
-
         $spec = function () {
             $this->_expectations = [];
             $closure = $this->_closure;
             $result = $closure($this);
             foreach ($this->_expectations as $expectation) {
-                $this->_passed = $expectation->passed() && $this->_passed;
+                $this->_passed = $expectation->process() && $this->_passed;
             }
-            array_pop(static::$_instances);
             return $result;
         };
 
-        if (Suite::$PHP >= 7) {
-            try {
-                $result = $spec();
-            } catch (Throwable $e) {
-                $this->_passed = false;
-                array_pop(static::$_instances);
-                throw $e;
-            }
-        } else {
-            try {
-                $result = $spec();
-            } catch (Exception $e) {
-                $this->_passed = false;
-                array_pop(static::$_instances);
-                throw $e;
-            }
-        }
-
-        return $result;
+        $suite = $this->suite();
+        return $spec();
     }
 
     /**
      * Spec start helper.
      */
-    protected function _specStart()
+    protected function _blockStart()
     {
         $this->report('specStart', $this);
         if ($this->_parent) {
@@ -182,7 +101,7 @@ class Specification extends Scope
     /**
      * Spec end helper.
      */
-    protected function _specEnd($runAfterEach = true)
+    protected function _blockEnd($runAfterEach = true)
     {
         foreach ($this->_expectations as $expectation) {
             foreach ($expectation->logs() as $log) {
@@ -196,7 +115,7 @@ class Specification extends Scope
         $type = $this->log()->type();
 
         if ($type === 'failed' || $type === 'errored') {
-            $this->_root->_failures++;
+            $this->suite()->failure();
         }
 
         if ($this->_parent && $runAfterEach) {
@@ -211,24 +130,7 @@ class Specification extends Scope
 
         $this->report('specEnd', $this->log());
 
-        if ($this->_parent) {
-            $this->_parent->autoclear();
-        }
-    }
-
-    /**
-     * Checks if all test passed.
-     *
-     * @return boolean Returns `true` if no error occurred, `false` otherwise.
-     */
-    public function passed(&$return = null)
-    {
-        if (!$this->_runned) {
-            $this->_process();
-        }
-        $this->_runned = true;
-        $return = $this->_return;
-        return $this->_passed;
+        $this->suite()->autoclear();
     }
 
     /**
